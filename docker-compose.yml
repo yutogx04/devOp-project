@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL Database ────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: mlops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-mlops_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./dbinit.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlops} -d ${POSTGRES_DB:-mlops_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - mlops-net
+
+  # ── Inference Service (ML model) ───────────────────────────────
+  inference-service:
+    build:
+      context: ./inference-service
+      dockerfile: Dockerfile
+    container_name: mlops-inference
+    restart: unless-stopped
+    environment:
+      MODEL_PATH: /app/model/model.joblib
+      MODEL_VERSION: "1.0.0"
+    ports:
+      - "${INFERENCE_PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mlops-net
+
+  # ── Prediction API (REST gateway) ─────────────────────────────
+  prediction-api:
+    build:
+      context: ./prediction-api
+      dockerfile: Dockerfile
+    container_name: mlops-prediction-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops_secret}@postgres:5432/${POSTGRES_DB:-mlops_db}
+      INFERENCE_URL: http://inference-service:8001
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inference-service:
+        condition: service_healthy
+    networks:
+      - mlops-net
+
+volumes:
+  postgres_data:
+
+networks:
+  mlops-net:
+    driver: bridge
